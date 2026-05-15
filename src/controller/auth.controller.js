@@ -1,10 +1,12 @@
 import userModel from "../models/user.model.js";
 import config from "../config/config.js";
-import crypto from "crypto";
+import crypto, { verify } from "crypto";
 import jwt from "jsonwebtoken";
 import Session from "../models/session.model.js";
 import sessionmodel from "../models/session.model.js";
-
+import { sendEmail } from "../service/email.service.js";
+import { genrateotp, getotphtml } from "../utils/util.js";
+import otpmodel from "../models/otp.model.js";
 
 //working
 async function register(req, res) {
@@ -29,91 +31,91 @@ async function register(req, res) {
     password: hashedPassword,
   });
 
-  const refreshtoken = jwt.sign({ id: user._id }, config.JWTKEY, {
-    expiresIn: "7d",
-  });
-  const refreshtokenhash = crypto
-    .createHash("sha256")
-    .update(refreshtoken)
-    .digest("hex");
+  const otp = genrateotp();
+  const html = getotphtml(otp);
 
-  const session = await Session.create({
-    userId: user._id,
-    refreshtokenhash,
-    ip: req.ip,
-    useragent: req.headers["user-agent"],
+  const otphash = crypto.createHash("sha256").update(otp).digest("hex");
+  await otpmodel.create({
+    email,
+    user: user._id,
+    otphash,
   });
 
-  const accestoken = jwt.sign(
-    { id: user._id, sessionId: session._id },
-    config.JWTKEY,
-    {
-      expiresIn: "15m",
-    },
-  );
-
-  res.cookie("refreshtoken", refreshtoken, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "strict",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+  await sendEmail(email, "verify your email", `your otp is ${otp}`, html);
 
   res.status(201).json({
     message: "user registed donee",
     user: {
       username: user.username,
       email: user.email,
+      verified: user.verified,
     },
-    accestoken,
   });
 }
 
-
-async function login(req,res) {
-  const {email,password} = req.body
-  const user =  await userModel.findOne({email})
-  if(!user){
+async function login(req, res) {
+  const { email, password } = req.body;
+  const user = await userModel.findOne({ email });
+  if (!user) {
     return res.status(401).json({
-      message:"invalid data "
-    })
+      message: "invalid data ",
+    });
   }
-  const hashedPassword  = crypto.createHash("sha256").update(password).digest("hex");
-  const isPasswordValid   = hashedPassword === user.password;
-
-  if(!isPasswordValid){
+  if(!user.verified ){
     return res.status(401).json({
-      message:"invalid password"
-    })
-} 
-  const refreshtoken = jwt.sign({
-      id:user._id
-    },config.JWTKEY,{
-      expiresIn:"7d"
-    })
-    const refreshtokenHash = crypto.createHash("sha256").update(refreshtoken).digest("hex");
-    const session = await sessionmodel.create({
-      userId:user._id,
-      refreshtokenHash,
-      ip:req.ip,  
-      userAgent:req.headers["user-agent"]
-  })
-  const accestoken = jwt.sign({
-    id:user._id,
-    sessionId:session._id
-  },config.JWTKEY,{
-    expiresIn:"15m"
-  })
-  res.cookie("refreshtoken",refreshtoken,{  
-    httpOnly:true,  
-    secure:true,
-    sameSite:"strict",
-    maxAge:7*24*60*60*1000
-  })
+      message: "please verify your email ",
+    });
+  }
+  const hashedPassword = crypto
+    .createHash("sha256")
+    .update(password)
+    .digest("hex");
+  const isPasswordValid = hashedPassword === user.password;
+
+  if (!isPasswordValid) {
+    return res.status(401).json({
+      message: "invalid password",
+    });
+  }
+  const refreshtoken = jwt.sign(
+    {
+      id: user._id,
+    },
+    config.JWTKEY,
+    {
+      expiresIn: "7d",
+    },
+  );
+  const refreshtokenHash = crypto
+    .createHash("sha256")
+    .update(refreshtoken)
+    .digest("hex");
+  const session = await sessionmodel.create({
+    userId: user._id,
+    refreshtokenHash,
+    ip: req.ip,
+    userAgent: req.headers["user-agent"],
+  });
+  const accestoken = jwt.sign(
+    {
+      id: user._id,
+      sessionId: session._id,
+    },
+    config.JWTKEY,
+    {
+      expiresIn: "15m",
+    },
+  );
+  res.cookie("refreshtoken", refreshtoken, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
   res.status(200).json({
-    message:"login done ",  
-    accesstoken:accestoken
-  })
+    message: "login done ",
+    accesstoken: accestoken,
+  });
 }
 
 async function getme(req, res) {
@@ -205,7 +207,7 @@ async function logout(req, res) {
     .createHash("sha256")
     .update(refreshtoken)
     .digest("hex");
-  const session = await Session .findOne({
+  const session = await Session.findOne({
     refreshtokenhash,
     revoked: false,
   });
@@ -225,27 +227,44 @@ async function logout(req, res) {
   });
 }
 
-
 async function logoutall(req, res) {
- const refreshtoken = req.cookies.refreshtoken;
+  const refreshtoken = req.cookies.refreshtoken;
   if (!refreshtoken) {
     return res.status(400).json({
       message: "refreshtoken not found ",
     });
   }
-  const decoded = jwt.verify(refreshtoken,config.JWTKEY)
-  await sessionmodel.updateMany({
-    user:decoded.id,
-    revoked:false
-  },{
-    revoked:true
-  })
+  const decoded = jwt.verify(refreshtoken, config.JWTKEY);
+  await sessionmodel.updateMany(
+    {
+      user: decoded.id,
+      revoked: false,
+    },
+    {
+      revoked: true,
+    },
+  );
 
-  res.clearCookie("refreshtoken")
+  res.clearCookie("refreshtoken");
 
   res.status(200).json({
-    message:"logut to all device done "
-  })
+    message: "logut to all device done ",
+  });
 }
 
-export default { register, getme, resfeshtoken, logout ,logoutall ,login};
+
+
+async function verifyemail(req, res) {
+  const { otp , email} = req.body;
+  const otphash = crypto.createHash("sha256").update(otp).digest("hex");
+  const otpRecord = await otpmodel.findOne({ email, otphash });
+  if (!otpRecord) {
+    return res.status(400).json({
+      message: "invalid otp ",
+    });
+  }
+  const user = await usermodel.findByIdAndUpdate(otpRecord.user, { verified: true });
+  await otpmodel.deleteMany({ email });
+  
+}
+export default { register, getme, resfeshtoken, logout, logoutall, login , verifyemail  };

@@ -14,6 +14,7 @@ authroutes.post("/refreshtoken",authController.resfeshtoken)
 authroutes.get("/logout",authController.logout)
 authroutes.get ("/logout-all",authController.logoutall)
 authroutes.post("/login",authController.login)
+authroutes.get("/verify-email",authController.verifyemail)
 
 
 
